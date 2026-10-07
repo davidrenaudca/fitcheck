@@ -733,7 +733,7 @@ HTML = """<!doctype html>
 
     table {
       width: 100%;
-      min-width: 850px;
+      min-width: 620px;
       border-collapse: collapse;
       table-layout: fixed;
     }
@@ -753,12 +753,9 @@ HTML = """<!doctype html>
       font-weight: 650;
     }
 
-    th:nth-child(1) { width: 29%; }
-    th:nth-child(2) { width: 14%; }
-    th:nth-child(3) { width: 15%; }
-    th:nth-child(4) { width: 18%; }
-    th:nth-child(5) { width: 14%; }
-    th:nth-child(6) { width: 10%; }
+    th:nth-child(1) { width: 58%; }
+    th:nth-child(2) { width: 18%; }
+    th:nth-child(3) { width: 24%; }
 
     tbody tr:last-child td,
     tfoot tr:last-child td { border-bottom: 0; }
@@ -860,8 +857,6 @@ HTML = """<!doctype html>
       margin-top: 10px;
     }
 
-    td:last-child { text-align: center; }
-
     .portfolio-name-wrap {
       display: flex;
       align-items: center;
@@ -958,7 +953,16 @@ HTML = """<!doctype html>
     .remove-button::after { transform: translate(-50%, -50%) rotate(-45deg); }
     .remove-button:hover { background: #a63d45; border-color: #a63d45; }
 
-    .row-actions { display: flex; align-items: center; justify-content: center; gap: 6px; }
+    .row-actions {
+      position: absolute;
+      z-index: 2;
+      top: 50%;
+      right: 12px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      transform: translateY(-50%);
+    }
     .edit-button {
       min-height: 28px;
       border: 1px solid #c8ced5;
@@ -990,7 +994,7 @@ HTML = """<!doctype html>
       pointer-events: none;
     }
 
-    .company-cell { position: relative; padding-left: 52px; }
+    .company-cell { position: relative; padding-right: 84px; }
 
     .ticker-input[readonly] {
       border-color: transparent;
@@ -1003,8 +1007,8 @@ HTML = """<!doctype html>
       position: absolute;
       z-index: 10;
       top: calc(100% - 7px);
-      left: 52px;
-      right: 12px;
+      left: 12px;
+      right: 84px;
       overflow: hidden;
       border: 1px solid #cbd1d8;
       border-radius: 6px;
@@ -1026,8 +1030,6 @@ HTML = """<!doctype html>
     .suggestion-name { display: block; color: var(--ink); font-weight: 650; }
     .suggestion-meta { display: block; margin-top: 2px; color: var(--muted); font-size: 12px; }
 
-    .purchase-close { color: #424951; font-variant-numeric: tabular-nums; }
-    .price-note { display: block; margin-top: 2px; color: var(--muted); font-size: 11px; }
     .portfolio-meta { color: #555d67; font-size: 13px; font-weight: 500; white-space: nowrap; }
 
     tfoot td {
@@ -1383,13 +1385,11 @@ HTML = """<!doctype html>
             <th>Company Name</th>
             <th>Ticker</th>
             <th>Portfolio Weight (%)</th>
-            <th>Price</th>
-            <th></th>
           </tr>
         </thead>
         <tbody>
           <tr id="empty-portfolio-row" class="empty-portfolio-row">
-            <td colspan="5">
+            <td colspan="3">
               <button id="add-portfolio-trigger" class="add-portfolio-trigger" type="button" onclick="openPortfolioDialog()" aria-expanded="false" aria-controls="portfolio-inline-form">Add portfolio</button>
               <div id="portfolio-inline-form" class="portfolio-inline-form" hidden>
                 <form onsubmit="createPortfolio(event)">
@@ -1410,15 +1410,13 @@ HTML = """<!doctype html>
                 <input id="portfolio-name" class="portfolio-name" type="text" placeholder="Add portfolio name" aria-label="Portfolio name">
               </div>
             </td>
-            <td></td>
-            <td id="portfolio-row-weight">0.00%</td>
-            <td></td>
             <td id="portfolio-row-count" class="portfolio-meta">0 holdings</td>
+            <td id="portfolio-row-weight">0.00%</td>
           </tr>
         </tbody>
         <tfoot hidden>
           <tr>
-            <td colspan="5">
+            <td colspan="3">
               <button class="icon-button add-button" type="button" onclick="addRow()" aria-label="Add holding" title="Add holding">+</button>
             </td>
           </tr>
@@ -1596,9 +1594,6 @@ HTML = """<!doctype html>
           <td class="cash-name">${label}</td>
           <td></td>
           <td><div class="weight-field"><input id="${currency}-cash-weight" class="weight-input" type="number" min="0" max="100" step="0.01" placeholder="0.00" aria-label="${label} portfolio weight percent"><span class="weight-suffix" aria-hidden="true">%</span></div></td>
-          <td></td>
-          <td></td>
-          <td></td>
         `;
         previous.after(row);
         previous = row;
@@ -1665,6 +1660,7 @@ HTML = """<!doctype html>
       tr.className = "draft-row";
       tr.innerHTML = `
         <td class="company-cell">
+          <div class="row-actions"><button class="edit-button" type="button" onclick="toggleHoldingEdit(this)" hidden>Edit</button><button class="remove-button" type="button" onclick="removeRow(this)" aria-label="Remove holding" title="Remove holding">x</button></div>
           <input class="company-input" type="text" placeholder="Search company" autocomplete="off" aria-label="Company name">
           <div class="suggestions" hidden></div>
           <select class="sector-input" hidden disabled aria-label="Sector">
@@ -1676,15 +1672,13 @@ HTML = """<!doctype html>
         </td>
         <td><input class="ticker-input" type="text" placeholder="Ticker" readonly aria-label="Ticker"></td>
         <td><div class="weight-field"><input class="weight-input" type="number" min="1" max="6" step="0.01" placeholder="0.00" aria-label="Portfolio weight percent"><span class="weight-suffix" aria-hidden="true">%</span></div></td>
-        <td class="purchase-close"><span class="price-value">-</span><span class="price-note"></span></td>
-        <td><div class="row-actions"><button class="edit-button" type="button" onclick="toggleHoldingEdit(this)" hidden>Edit</button><button class="remove-button" type="button" onclick="removeRow(this)" aria-label="Remove holding" title="Remove holding">x</button></div></td>
       `;
       tbody.appendChild(tr);
 
       const actions = document.createElement("tr");
       actions.className = "draft-actions-row";
       actions.innerHTML = `
-        <td colspan="5">
+        <td colspan="3">
           <div class="draft-actions">
             <span class="draft-validation">Complete company and weight.</span>
             <button class="commit-holding-button" type="button" onclick="commitHolding(this)" disabled>Add to Portfolio</button>
@@ -1711,7 +1705,6 @@ HTML = """<!doctype html>
         delete row.dataset.sectorGroup;
         row.querySelector(".ticker-input").value = "";
         row.querySelector(".sector-input").value = "";
-        resetPrice(row);
         clearTimeout(searchTimer);
         const query = companyInput.value.trim();
         if (query.length < 2) {
@@ -1793,11 +1786,9 @@ HTML = """<!doctype html>
       row.querySelector(".sector-input").value = "";
       row.dataset.selectedCompany = result.company_name;
       hideSuggestions(row);
-      resetPrice(row);
       updateDraftValidation(row);
       row.querySelector(".weight-input").focus();
       await classifyHoldingRow(row, result.ticker);
-      await fetchLatestClose(row);
     }
 
     async function classifyHoldingRow(row, ticker) {
@@ -1938,7 +1929,7 @@ HTML = """<!doctype html>
         header.className = "sector-header";
         header.hidden = !isExpanded;
         const cell = document.createElement("td");
-        cell.colSpan = 6;
+        cell.colSpan = 3;
         cell.textContent = group;
         header.appendChild(cell);
         tbody.appendChild(header);
@@ -2500,11 +2491,6 @@ HTML = """<!doctype html>
       document.querySelectorAll(".suggestions").forEach((list) => { list.hidden = true; });
     }
 
-    function resetPrice(row) {
-      row.querySelector(".price-value").textContent = "-";
-      row.querySelector(".price-note").textContent = "";
-    }
-
     function formatWeight(input) {
       if (input.value === "") return;
       const value = Number(input.value);
@@ -2512,27 +2498,6 @@ HTML = """<!doctype html>
       const row = input.closest("tr");
       if (row?.classList.contains("draft-row")) updateDraftValidation(row);
       else updatePortfolioSummary();
-    }
-
-    async function fetchLatestClose(row) {
-      const ticker = row.querySelector(".ticker-input").value.trim();
-      const value = row.querySelector(".price-value");
-      const note = row.querySelector(".price-note");
-      value.textContent = "...";
-      note.textContent = "";
-
-      try {
-        const response = await fetch(`/price?ticker=${encodeURIComponent(ticker)}`);
-        const result = await response.json();
-        if (!response.ok) throw new Error(result.error || "Price unavailable");
-        value.textContent = `$${Number(result.close).toFixed(2)}`;
-        note.textContent = `Close: ${result.price_date}`;
-      } catch (error) {
-        value.textContent = "-";
-        note.textContent = "Unavailable";
-      } finally {
-        if (row.classList.contains("holding-row")) scheduleAnalysisRefresh();
-      }
     }
 
     function removeRow(button) {
@@ -2799,7 +2764,6 @@ def run_streamlit_native_app() -> None:
                 "Company Name": holding["company_name"],
                 "Ticker": holding["ticker"],
                 "Portfolio Weight (%)": f'{holding["weight"]:.2f}%',
-                "Price": f'${holding["price"]:.2f}',
             }
             for holding in group_holdings
         ]
@@ -2847,14 +2811,12 @@ def run_streamlit_native_app() -> None:
                 else:
                     try:
                         classification = classify_security(ticker)
-                        price = latest_completed_close(ticker)
                         holdings.append({
                             "company_name": selected["company_name"],
                             "ticker": ticker,
                             "gics_sector": classification["gics_sector"],
                             "sector_group": classification["sector_group"],
                             "weight": float(weight),
-                            "price": price["close"],
                         })
                         st.rerun()
                     except Exception as error:

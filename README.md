@@ -8,7 +8,7 @@ FitCheck is a Streamlit portfolio analytics platform for a student investment fu
 - Creates the portfolio row and its first empty holding row after the name is submitted.
 - Keeps the portfolio name editable directly in its table row.
 - Keeps new holdings as draft rows until company and weight are complete and `Add to Portfolio` is selected.
-- Lets users edit committed holdings and refresh their company, automatic ticker and sector classification, weight, and latest completed close.
+- Lets users edit committed holdings and refresh their company, automatic ticker and sector classification, and weight.
 - Hides the add-security control at 100% and restores it after an existing weight is lowered.
 - Applies sector grouping and alphabetical sorting only after the holding is added.
 - Provides a plus/minus control to expand or collapse the individual security rows.
@@ -20,8 +20,6 @@ FitCheck is a Streamlit portfolio analytics platform for a student investment fu
 - Keeps each security weight between 1% and 6%.
 - Includes permanent CAD Cash and USD Cash rows in the current portfolio total.
 - Flags duplicate tickers.
-- Pulls the latest completed closing price automatically from Yahoo Finance with `yfinance`.
-- Uses exchange calendars to avoid displaying an unfinished current-session price before the market closes.
 - Supports Yahoo Finance ticker formats, including Canadian tickers such as `RY.TO`, `SHOP.TO`, and `CASH.TO`.
 
 ## Run It
@@ -49,7 +47,6 @@ No application secrets are required. Yahoo Finance data is retrieved at runtime 
 - `Company Name`: searchable security name supplied by Yahoo Finance.
 - `Ticker`: automatically filled Yahoo Finance symbol; Canadian listings retain suffixes such as `.TO`.
 - `Portfolio Weight (%)`: numeric allocation with a fixed, non-editable percent suffix.
-- `Price`: dollar-formatted latest completed Yahoo Finance close, with its effective date shown below it.
 
 ## Output Modes
 
