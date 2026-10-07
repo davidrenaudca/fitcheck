@@ -2276,7 +2276,10 @@ HTML = """<!doctype html>
 
     function reductionHoldingStatuses() {
       const candidateGroup = document.getElementById("candidate-section").dataset.sectorGroup || "";
-      const holdings = activeRows().map((holding) => {
+      const visibleHoldings = activeRows().filter(
+        (holding) => reductionScope !== "sector" || holding.sector_group === candidateGroup
+      );
+      const holdings = visibleHoldings.map((holding) => {
         const capacity = Math.max(0, Number(holding.weight || 0) - 1);
         let eligible = true;
         let reason = "";
@@ -2286,12 +2289,6 @@ HTML = """<!doctype html>
         } else if (capacity <= 0) {
           eligible = false;
           reason = "Already at the 1.00% minimum weight.";
-        } else if (reductionScope === "sector" && !candidateGroup) {
-          eligible = false;
-          reason = "Waiting for the candidate sector.";
-        } else if (reductionScope === "sector" && holding.sector_group !== candidateGroup) {
-          eligible = false;
-          reason = `Outside the ${candidateGroup} reduction scope.`;
         }
         return { ...holding, capacity, eligible, reason };
       });
@@ -2322,6 +2319,15 @@ HTML = """<!doctype html>
       }
 
       const holdings = reductionHoldingStatuses();
+      const candidateGroup = document.getElementById("candidate-section").dataset.sectorGroup || "";
+      if (reductionScope === "sector" && holdings.length === 0) {
+        const empty = document.createElement("div");
+        empty.className = "reduction-empty";
+        empty.textContent = candidateGroup
+          ? "There are no existing holdings in the candidate's sector available for reduction."
+          : "Select a candidate security to identify its sector.";
+        list.appendChild(empty);
+      }
       holdings.forEach((holding) => {
         const row = document.createElement("div");
         row.className = `reduction-row${optimizeReductions || fundingMode !== "reduce" ? "" : " manual"}${holding.eligible ? "" : " ineligible"}`;
