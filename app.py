@@ -1626,7 +1626,7 @@ HTML = """<!doctype html>
             </div>
           </div>
           <div id="cash-funding" class="cash-funding" aria-live="polite"></div>
-          <div id="reduce-funding">
+          <div id="reduce-funding" hidden>
             <label id="automatic-reduction-option" class="automatic-reduction-option" hidden>
               <input id="optimize-reductions" type="checkbox" checked onchange="setOptimizeReductions(this.checked)">
               <span>Optimize Reduction Automatically</span>
@@ -2243,6 +2243,7 @@ HTML = """<!doctype html>
       fundingMode = mode;
       document.getElementById("funding-cash").setAttribute("aria-pressed", String(mode === "cash"));
       document.getElementById("funding-reduce").setAttribute("aria-pressed", String(mode === "reduce"));
+      document.getElementById("reduce-funding").hidden = mode !== "reduce";
       document.getElementById("automatic-reduction-option").hidden = mode !== "reduce";
       document.getElementById("reduction-scope-control").hidden = mode !== "reduce";
       updateFundingSummary();
@@ -2313,6 +2314,13 @@ HTML = """<!doctype html>
 
       const list = document.getElementById("reduction-list");
       list.replaceChildren();
+      if (fundingMode !== "reduce") {
+        summary.textContent = "";
+        summary.classList.remove("complete", "warning");
+        scheduleAnalysisRefresh();
+        return;
+      }
+
       const holdings = reductionHoldingStatuses();
       holdings.forEach((holding) => {
         const row = document.createElement("div");
@@ -2373,9 +2381,7 @@ HTML = """<!doctype html>
       const selectedCount = holdings.filter(
         (holding) => holding.eligible && selectedReductionTickers.has(holding.ticker)
       ).length;
-      if (fundingMode === "cash") {
-        summary.textContent = "Candidate weight will be optimized using available cash.";
-      } else if (optimizeReductions) {
+      if (optimizeReductions) {
         summary.textContent = `${eligibleCount} holding${eligibleCount === 1 ? "" : "s"} available to the optimizer; cash will fund any remainder.`;
       } else {
         summary.textContent = `${selectedCount} eligible holding${selectedCount === 1 ? "" : "s"} selected; cash will fund any remainder.`;
@@ -2542,6 +2548,10 @@ HTML = """<!doctype html>
       const cash = document.createElement("p");
       cash.textContent = `CAD Cash ${Number(row.cash_used.cad).toFixed(2)}% · USD Cash ${Number(row.cash_used.usd).toFixed(2)}%`;
       funding.appendChild(cash);
+      if (fundingMode === "cash") {
+        document.getElementById("cash-funding").textContent =
+          `Cash used: CAD Cash ${Number(row.cash_used.cad).toFixed(2)}% · USD Cash ${Number(row.cash_used.usd).toFixed(2)}%`;
+      }
     }
 
     function renderAnalysis(result) {
