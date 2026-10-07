@@ -907,6 +907,20 @@ HTML = """<!doctype html>
       outline-offset: -2px;
     }
 
+    .portfolio-inline-form {
+      width: min(420px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 2px 0 18px;
+      text-align: left;
+    }
+
+    .portfolio-inline-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      margin-top: 10px;
+    }
+
     td:last-child { text-align: center; }
 
     .portfolio-name-wrap {
@@ -1203,18 +1217,6 @@ HTML = """<!doctype html>
     .add-button::before { transform: translate(-50%, -50%); }
     .add-button::after { transform: translate(-50%, -50%) rotate(90deg); }
     .add-button:hover { border-color: #286a59; background: #286a59; }
-
-    dialog {
-      width: min(360px, calc(100vw - 32px));
-      border: 1px solid var(--line);
-      border-radius: 7px;
-      padding: 20px;
-      color: var(--ink);
-      box-shadow: 0 18px 48px rgba(24, 31, 38, 0.2);
-    }
-
-    dialog::backdrop { background: rgba(24, 31, 38, 0.28); }
-    dialog h2 { margin: 0 0 16px; font-size: 18px; letter-spacing: 0; }
 
     .dialog-label {
       display: block;
@@ -1554,7 +1556,17 @@ HTML = """<!doctype html>
         <tbody>
           <tr id="empty-portfolio-row" class="empty-portfolio-row">
             <td colspan="6">
-              <button class="add-portfolio-trigger" type="button" onclick="openPortfolioDialog()">Add portfolio</button>
+              <button id="add-portfolio-trigger" class="add-portfolio-trigger" type="button" onclick="openPortfolioDialog()" aria-expanded="false" aria-controls="portfolio-inline-form">Add portfolio</button>
+              <div id="portfolio-inline-form" class="portfolio-inline-form" hidden>
+                <form onsubmit="createPortfolio(event)">
+                  <label class="dialog-label" for="new-portfolio-name">Portfolio name</label>
+                  <input id="new-portfolio-name" type="text" autocomplete="off" placeholder="Enter portfolio name" required>
+                  <div class="portfolio-inline-actions">
+                    <button class="dialog-button" type="button" onclick="closePortfolioDialog()">Cancel</button>
+                    <button class="dialog-button primary" type="submit">Create</button>
+                  </div>
+                </form>
+              </div>
             </td>
           </tr>
           <tr id="portfolio-row" class="portfolio-row" hidden>
@@ -1673,17 +1685,6 @@ HTML = """<!doctype html>
       </div>
     </section>
 
-    <dialog id="portfolio-dialog" aria-labelledby="portfolio-dialog-title">
-      <form onsubmit="createPortfolio(event)">
-        <h2 id="portfolio-dialog-title">Add portfolio</h2>
-        <label class="dialog-label" for="new-portfolio-name">Portfolio name</label>
-        <input id="new-portfolio-name" type="text" autocomplete="off" required>
-        <div class="dialog-actions">
-          <button class="dialog-button" type="button" onclick="closePortfolioDialog()">Cancel</button>
-          <button class="dialog-button primary" type="submit">Create</button>
-        </div>
-      </form>
-    </dialog>
   </main>
 
   <script>
@@ -1710,19 +1711,21 @@ HTML = """<!doctype html>
     }
 
     function openPortfolioDialog() {
-      const dialog = document.getElementById("portfolio-dialog");
+      const panel = document.getElementById("portfolio-inline-form");
+      const trigger = document.getElementById("add-portfolio-trigger");
       const input = document.getElementById("new-portfolio-name");
-      input.value = "";
+      if (!portfolioDialogOpen) input.value = "";
       input.setCustomValidity("");
-      if (!dialog.open) dialog.showModal();
+      panel.hidden = false;
+      trigger.setAttribute("aria-expanded", "true");
       portfolioDialogOpen = true;
       if (window.fitcheckUiState) window.fitcheckUiState.portfolioModalOpen = true;
       input.focus();
     }
 
     function closePortfolioDialog() {
-      const dialog = document.getElementById("portfolio-dialog");
-      if (dialog.open) dialog.close();
+      document.getElementById("portfolio-inline-form").hidden = true;
+      document.getElementById("add-portfolio-trigger").setAttribute("aria-expanded", "false");
       portfolioDialogOpen = false;
       if (window.fitcheckUiState) window.fitcheckUiState.portfolioModalOpen = false;
     }
@@ -3501,13 +3504,11 @@ STREAMLIT_COMPONENT_BRIDGE = r"""
       };
 
       window.addEventListener("DOMContentLoaded", () => {
-        const dialog = document.getElementById("portfolio-dialog");
-        if (dialog?.open) dialog.close();
+        const panel = document.getElementById("portfolio-inline-form");
+        const trigger = document.getElementById("add-portfolio-trigger");
+        if (panel) panel.hidden = true;
+        trigger?.setAttribute("aria-expanded", "false");
         window.fitcheckUiState = { portfolioModalOpen: false };
-        dialog?.addEventListener("close", () => {
-          portfolioDialogOpen = false;
-          window.fitcheckUiState.portfolioModalOpen = false;
-        });
         postMessage("streamlit:componentReady", { apiVersion: 1 });
         updateFrameHeight();
         if (document.body) {
