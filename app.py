@@ -789,6 +789,7 @@ HTML = """<!doctype html>
       border: 1px solid var(--line);
       border-radius: 7px;
       overflow: visible;
+      box-shadow: 0 1px 3px rgba(23, 26, 31, .05);
     }
 
     table {
@@ -901,6 +902,10 @@ HTML = """<!doctype html>
     }
 
     .add-portfolio-trigger:hover { background: #f5f7f8; color: var(--ink); }
+    .add-portfolio-trigger:focus-visible {
+      outline: 2px solid rgba(123, 38, 61, .28);
+      outline-offset: -2px;
+    }
 
     td:last-child { text-align: center; }
 
@@ -1685,6 +1690,7 @@ HTML = """<!doctype html>
     const today = "__TODAY__";
     let isExpanded = true;
     let portfolioCreated = false;
+    let portfolioDialogOpen = false;
     let fundingMode = "cash";
     let cashSource = "cad";
     let reductionScope = "all";
@@ -1708,12 +1714,17 @@ HTML = """<!doctype html>
       const input = document.getElementById("new-portfolio-name");
       input.value = "";
       input.setCustomValidity("");
-      dialog.showModal();
+      if (!dialog.open) dialog.showModal();
+      portfolioDialogOpen = true;
+      if (window.fitcheckUiState) window.fitcheckUiState.portfolioModalOpen = true;
       input.focus();
     }
 
     function closePortfolioDialog() {
-      document.getElementById("portfolio-dialog").close();
+      const dialog = document.getElementById("portfolio-dialog");
+      if (dialog.open) dialog.close();
+      portfolioDialogOpen = false;
+      if (window.fitcheckUiState) window.fitcheckUiState.portfolioModalOpen = false;
     }
 
     function createPortfolio(event) {
@@ -3490,12 +3501,19 @@ STREAMLIT_COMPONENT_BRIDGE = r"""
       };
 
       window.addEventListener("DOMContentLoaded", () => {
+        const dialog = document.getElementById("portfolio-dialog");
+        if (dialog?.open) dialog.close();
+        window.fitcheckUiState = { portfolioModalOpen: false };
+        dialog?.addEventListener("close", () => {
+          portfolioDialogOpen = false;
+          window.fitcheckUiState.portfolioModalOpen = false;
+        });
+        postMessage("streamlit:componentReady", { apiVersion: 1 });
         updateFrameHeight();
         if (document.body) {
           new ResizeObserver(updateFrameHeight).observe(document.body);
         }
       });
-      postMessage("streamlit:componentReady", { apiVersion: 1 });
     })();
   </script>
 """
@@ -3571,15 +3589,32 @@ def run_streamlit_app() -> None:
     from streamlit.components.v1 import declare_component
 
     st.set_page_config(page_title="FitCheck", layout="wide")
+    if "fitcheck_modal_open" not in st.session_state:
+        st.session_state.fitcheck_modal_open = False
     st.markdown(
         """
         <style>
+          html, body, #root, .stApp,
+          [data-testid="stApp"],
+          [data-testid="stAppViewContainer"] {
+            background: #fff !important;
+          }
           header[data-testid="stHeader"], footer { display: none; }
           [data-testid="stAppViewContainer"] > .main .block-container {
             max-width: none;
             padding: 0;
           }
-          [data-testid="stCustomComponentV1"] { display: block; }
+          [data-testid="stCustomComponentV1"] {
+            display: block;
+            border: 0 !important;
+            box-shadow: none !important;
+            outline: 0 !important;
+          }
+          iframe[title="app.fitcheck_interface"] {
+            border: 0 !important;
+            box-shadow: none !important;
+            outline: 0 !important;
+          }
         </style>
         """,
         unsafe_allow_html=True,
