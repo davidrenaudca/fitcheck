@@ -3123,7 +3123,7 @@ def streamlit_runtime_active() -> bool:
     return get_script_run_ctx(suppress_warning=True) is not None
 
 
-def run_streamlit_app() -> None:
+def run_streamlit_native_app() -> None:
     import pandas as pd
     import streamlit as st
 
@@ -3429,6 +3429,184 @@ def run_streamlit_app() -> None:
                 weights = [row["candidate_weight"] for row in rows]
                 label = "Very Sensitive" if weights and max(weights) - min(weights) >= 2 else "Not Sensitive"
                 st.markdown(f"**{label}**")
+
+
+STREAMLIT_COMPONENT_BRIDGE = r"""
+  <script>
+    (() => {
+      const pendingRequests = new Map();
+      const handledResponses = new Set();
+      let requestCounter = 0;
+      const browserFetch = window.fetch.bind(window);
+
+      function postMessage(type, payload = {}) {
+        window.parent.postMessage({ isStreamlitMessage: true, type, ...payload }, "*");
+      }
+
+      function updateFrameHeight() {
+        const height = Math.max(
+          document.documentElement.scrollHeight,
+          document.body ? document.body.scrollHeight : 0
+        );
+        postMessage("streamlit:setFrameHeight", { height: height + 2 });
+      }
+
+      window.addEventListener("message", (event) => {
+        if (event.data?.type !== "streamlit:render") return;
+        const response = event.data.args?.response;
+        if (response?.id && !handledResponses.has(response.id)) {
+          handledResponses.add(response.id);
+          const pending = pendingRequests.get(response.id);
+          if (pending) {
+            pendingRequests.delete(response.id);
+            const body = JSON.stringify(response.data ?? {});
+            pending.resolve({
+              ok: response.status >= 200 && response.status < 300,
+              status: response.status,
+              json: async () => response.data,
+              text: async () => body
+            });
+          }
+        }
+        window.setTimeout(updateFrameHeight, 0);
+      });
+
+      window.fetch = (resource, options = {}) => {
+        const url = typeof resource === "string" ? resource : resource?.url;
+        if (!url || !url.startsWith("/")) return browserFetch(resource, options);
+
+        const id = `${Date.now()}-${++requestCounter}`;
+        const request = {
+          id,
+          url,
+          method: String(options.method || "GET").toUpperCase(),
+          body: typeof options.body === "string" ? options.body : ""
+        };
+        const promise = new Promise((resolve, reject) => {
+          pendingRequests.set(id, { resolve, reject });
+        });
+        postMessage("streamlit:setComponentValue", { value: request });
+        return promise;
+      };
+
+      window.addEventListener("DOMContentLoaded", () => {
+        updateFrameHeight();
+        if (document.body) {
+          new ResizeObserver(updateFrameHeight).observe(document.body);
+        }
+      });
+      postMessage("streamlit:componentReady", { apiVersion: 1 });
+    })();
+  </script>
+"""
+
+
+def streamlit_component_html() -> str:
+    script_marker = "  <script>\n    const today"
+    if script_marker not in HTML:
+        raise RuntimeError("FitCheck component script marker was not found.")
+    return HTML.replace(script_marker, STREAMLIT_COMPONENT_BRIDGE + script_marker, 1)
+
+
+def handle_streamlit_request(request: dict) -> dict:
+    request_id = str(request.get("id", ""))
+    method = str(request.get("method", "GET")).upper()
+    parsed_path = urlparse(str(request.get("url", "")))
+    status = 200
+
+    try:
+        if method == "GET" and parsed_path.path == "/search":
+            query = parse_qs(parsed_path.query).get("q", [""])[0]
+            result = search_securities(query)
+        elif method == "GET" and parsed_path.path == "/classification":
+            ticker = parse_qs(parsed_path.query).get("ticker", [""])[0].strip().upper()
+            if not ticker:
+                raise ValueError("Ticker is required.")
+            result = classify_security(ticker)
+        elif method == "GET" and parsed_path.path == "/trading-days":
+            params = parse_qs(parsed_path.query)
+            ticker = params.get("ticker", [""])[0].strip().upper()
+            year = int(params.get("year", [""])[0])
+            month = int(params.get("month", [""])[0])
+            if not ticker or month < 1 or month > 12:
+                raise ValueError("Ticker, year, and month are required.")
+            result = {
+                "ticker": ticker,
+                "calendar": calendar_name_for_ticker(ticker),
+                "cutoff": earliest_available_price_date(ticker).isoformat(),
+                "days": trading_days_for_month(ticker, year, month),
+            }
+        elif method == "GET" and parsed_path.path == "/price":
+            params = parse_qs(parsed_path.query)
+            ticker = params.get("ticker", [""])[0].strip().upper()
+            selected_date = params.get("date", [""])[0].strip()
+            if not ticker or not selected_date:
+                raise ValueError("Ticker and purchase date are required.")
+            result = purchase_date_close(ticker, selected_date)
+        elif method == "POST" and parsed_path.path in {"/prepare", "/analyze"}:
+            payload = json.loads(str(request.get("body", "{}")))
+            result = (
+                analyze_portfolio(payload)
+                if parsed_path.path == "/analyze"
+                else prepare_portfolio(payload)
+            )
+        else:
+            status = 404
+            result = {"error": "Unknown FitCheck request."}
+    except (json.JSONDecodeError, TypeError, ValueError, RuntimeError) as error:
+        status = 400
+        result = {"error": str(error)}
+    except Exception as error:
+        status = 502
+        result = {"error": f"FitCheck data request failed: {error}"}
+
+    return {"id": request_id, "status": status, "data": result}
+
+
+def run_streamlit_app() -> None:
+    import tempfile
+    from pathlib import Path
+
+    import streamlit as st
+    from streamlit.components.v1 import declare_component
+
+    st.set_page_config(page_title="FitCheck", layout="wide")
+    st.markdown(
+        """
+        <style>
+          header[data-testid="stHeader"], footer { display: none; }
+          [data-testid="stAppViewContainer"] > .main .block-container {
+            max-width: none;
+            padding: 0;
+          }
+          [data-testid="stCustomComponentV1"] { display: block; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    component_directory = Path(tempfile.gettempdir()) / "fitcheck_streamlit_component"
+    component_directory.mkdir(parents=True, exist_ok=True)
+    component_index = component_directory / "index.html"
+    component_source = streamlit_component_html()
+    if not component_index.exists() or component_index.read_text(encoding="utf-8") != component_source:
+        component_index.write_text(component_source, encoding="utf-8")
+
+    fitcheck_component = declare_component("fitcheck_interface", path=component_directory)
+    response = st.session_state.get("fitcheck_response")
+    request = fitcheck_component(
+        response=response,
+        default=None,
+        key="fitcheck-interface",
+        height=900,
+    )
+
+    if isinstance(request, dict) and request.get("id"):
+        request_id = str(request["id"])
+        if request_id != st.session_state.get("fitcheck_processed_request"):
+            st.session_state.fitcheck_processed_request = request_id
+            st.session_state.fitcheck_response = handle_streamlit_request(request)
+            st.rerun()
 
 
 if __name__ == "__main__":
