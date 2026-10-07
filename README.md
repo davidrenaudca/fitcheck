@@ -7,24 +7,21 @@ FitCheck is a Streamlit portfolio analytics platform for a student investment fu
 - Starts with a single `Add portfolio` row and collects the name in a compact dialog.
 - Creates the portfolio row and its first empty holding row after the name is submitted.
 - Keeps the portfolio name editable directly in its table row.
-- Keeps new holdings as draft rows until company, weight, and purchase date are complete and `Add to Portfolio` is selected.
-- Lets users edit committed holdings and refresh their company, automatic ticker and sector classification, weight, purchase date, and purchase-date close.
+- Keeps new holdings as draft rows until company and weight are complete and `Add to Portfolio` is selected.
+- Lets users edit committed holdings and refresh their company, automatic ticker and sector classification, weight, and latest completed close.
 - Hides the add-security control at 100% and restores it after an existing weight is lowered.
 - Applies sector grouping and alphabetical sorting only after the holding is added.
 - Provides a plus/minus control to expand or collapse the individual security rows.
 - Starts with an empty portfolio and adds holdings from a single plus control below the table.
 - Searches Yahoo Finance for matching company names and fills a read-only ticker automatically.
-- Captures company name, ticker, portfolio weight, and purchase date.
+- Captures company name, ticker, and portfolio weight.
 - Classifies holdings from Yahoo Finance sector metadata and automatically groups them as Materials, FIGs, TMTH, Consumers, Infrastructure, or Industrials.
 - Sorts companies alphabetically within each sector group.
 - Keeps each security weight between 1% and 6%.
 - Includes permanent CAD Cash and USD Cash rows in the current portfolio total.
 - Flags duplicate tickers.
-- Pulls the closing price for each selected purchase date automatically from Yahoo Finance with `yfinance`.
-- Uses exchange calendars to disable weekends, market holidays, and future dates.
-- Disables dates before the security's earliest available Yahoo Finance price, which serves as the listing-date cutoff when an explicit IPO date is unavailable.
-- Supports both arrow-based month navigation and direct month/year selection for older dates.
-- If today is selected before the market closes, shows the most recent completed close and its actual date.
+- Pulls the latest completed closing price automatically from Yahoo Finance with `yfinance`.
+- Uses exchange calendars to avoid displaying an unfinished current-session price before the market closes.
 - Supports Yahoo Finance ticker formats, including Canadian tickers such as `RY.TO`, `SHOP.TO`, and `CASH.TO`.
 
 ## Run It
@@ -52,13 +49,12 @@ No application secrets are required. Yahoo Finance data is retrieved at runtime 
 - `Company Name`: searchable security name supplied by Yahoo Finance.
 - `Ticker`: automatically filled Yahoo Finance symbol; Canadian listings retain suffixes such as `.TO`.
 - `Portfolio Weight (%)`: numeric allocation with a fixed, non-editable percent suffix.
-- `Purchase Date`: selected from valid trading sessions for the security's exchange.
-- `Price`: dollar-formatted Yahoo Finance close for the selected purchase date, or the dated previous close when today's session is still open.
+- `Price`: dollar-formatted latest completed Yahoo Finance close, with its effective date shown below it.
 
 ## Output Modes
 
 - Expanded: the portfolio row and each editable holding row are visible.
-- Condensed: only the portfolio row is visible; its purchase date remains blank.
+- Condensed: only the portfolio row is visible.
 
 ## Block 2: Candidate Stock
 

@@ -56,7 +56,6 @@ def clean_holding(row: dict) -> dict:
         "gics_sector": str(row.get("gics_sector", "")).strip(),
         "sector_group": str(row.get("sector_group", "")).strip(),
         "weight": parse_weight(row.get("weight")),
-        "purchase_date": str(row.get("purchase_date", "")).strip(),
     }
 
 
@@ -107,9 +106,6 @@ def validate_holdings(holdings: list[dict]) -> list[str]:
             f"Portfolio weights currently total {total_weight:.2f}%. They should total 100%."
         )
 
-    if any(not holding["purchase_date"] for holding in holdings):
-        errors.append("Every holding needs a purchase date.")
-
     return errors
 
 
@@ -129,97 +125,47 @@ def market_schedule(ticker: str, start: date, end: date):
     return calendar.schedule(start_date=start.isoformat(), end_date=end.isoformat())
 
 
-@lru_cache(maxsize=256)
-def earliest_available_price_date(ticker: str) -> date:
+def latest_completed_close(ticker: str) -> dict:
+    ticker = ticker.strip().upper()
+    if not ticker:
+        raise ValueError("Ticker is required.")
     if yf is None:
         raise RuntimeError("yfinance is not installed")
 
-    history = yf.Ticker(ticker).history(period="max", interval="1d", auto_adjust=False)
-    closes = history.get("Close")
-    if closes is None or closes.dropna().empty:
-        raise ValueError("Yahoo Finance did not return any historical prices.")
-    return closes.dropna().index[0].date()
+    today = date.today()
+    schedule = market_schedule(ticker, today - timedelta(days=14), today)
+    now = datetime.now(timezone.utc)
+    completed_sessions = [
+        session.date()
+        for session, row in schedule.iterrows()
+        if row["market_close"].to_pydatetime().astimezone(timezone.utc) <= now
+    ]
+    if not completed_sessions:
+        raise ValueError("No completed market close is available.")
 
-
-@lru_cache(maxsize=256)
-def trading_days_for_month(ticker: str, year: int, month: int) -> list[str]:
-    month_start = date(year, month, 1)
-    if month == 12:
-        month_end = date(year + 1, 1, 1) - timedelta(days=1)
-    else:
-        month_end = date(year, month + 1, 1) - timedelta(days=1)
-
-    cutoff = earliest_available_price_date(ticker)
-    start = max(month_start, cutoff)
-    end = min(month_end, date.today())
-    if end < start:
-        return []
-
-    schedule = market_schedule(ticker, start, end)
-    return [session.date().isoformat() for session in schedule.index]
-
-
-def purchase_date_close(ticker: str, selected_date: str) -> dict:
-    ticker = ticker.strip().upper()
-    target = date.fromisoformat(selected_date)
-    if target > date.today():
-        raise ValueError("Purchase date cannot be in the future.")
-    cutoff = earliest_available_price_date(ticker)
-    if target < cutoff:
-        raise ValueError(
-            f"Purchase date cannot be before the earliest available price date ({cutoff.isoformat()})."
-        )
-
-    schedule = market_schedule(ticker, target - timedelta(days=14), target)
-    sessions = [(session.date(), row) for session, row in schedule.iterrows()]
-    matching = [(session, row) for session, row in sessions if session == target]
-    if not matching:
-        raise ValueError("The selected date is not a trading day for this security.")
-
-    effective_date = target
-    used_previous_close = False
-    if target == date.today():
-        market_close = matching[0][1]["market_close"].to_pydatetime()
-        if datetime.now(timezone.utc) < market_close.astimezone(timezone.utc):
-            prior_sessions = [session for session, _ in sessions if session < target]
-            if not prior_sessions:
-                raise ValueError("No prior market close is available.")
-            effective_date = prior_sessions[-1]
-            used_previous_close = True
-
+    effective_date = completed_sessions[-1]
     history = yf.Ticker(ticker).history(
         start=(effective_date - timedelta(days=7)).isoformat(),
         end=(effective_date + timedelta(days=1)).isoformat(),
         auto_adjust=False,
     )
     closes = history.get("Close")
-    if closes is None:
+    if closes is None or closes.dropna().empty:
         raise ValueError("Yahoo Finance did not return closing prices.")
-    closes = closes.dropna()
-    matching_closes = [
-        float(value)
-        for timestamp, value in closes.items()
-        if timestamp.date() == effective_date
+
+    available = [
+        (timestamp.date(), float(value))
+        for timestamp, value in closes.dropna().items()
+        if timestamp.date() <= effective_date
     ]
+    if not available:
+        raise ValueError("Yahoo Finance did not return a completed close.")
 
-    if not matching_closes and target == date.today():
-        prior = [(timestamp.date(), float(value)) for timestamp, value in closes.items()]
-        if prior:
-            effective_date, close = prior[-1]
-            used_previous_close = True
-        else:
-            raise ValueError("No completed market close is available yet.")
-    elif not matching_closes:
-        raise ValueError("Yahoo Finance did not return a close for the selected date.")
-    else:
-        close = matching_closes[-1]
-
+    price_date, close = available[-1]
     return {
         "ticker": ticker,
-        "selected_date": selected_date,
         "close": round(close, 2),
-        "price_date": effective_date.isoformat(),
-        "used_previous_close": used_previous_close,
+        "price_date": price_date.isoformat(),
     }
 
 
@@ -235,14 +181,13 @@ def fetch_price_data(holdings: list[dict]) -> tuple[dict[str, dict], list[str]]:
     for holding in holdings:
         ticker = holding["ticker"]
         try:
-            result = purchase_date_close(ticker, holding["purchase_date"])
+            result = latest_completed_close(ticker)
         except Exception as error:
             warnings.append(f"{ticker}: closing price lookup failed ({error}).")
             continue
         prices[ticker] = {
-            "purchase_close": result["close"],
-            "purchase_close_date": result["price_date"],
-            "used_previous_close": result["used_previous_close"],
+            "close": result["close"],
+            "price_date": result["price_date"],
         }
 
     return prices, warnings
@@ -294,7 +239,7 @@ def build_output(
             f"{holding['ticker']} ({holding['weight']:.2f}%)" for holding in holdings
         )
         price_detail = ", ".join(
-            f"{ticker}: {price['purchase_close']:.2f} on {price['purchase_close_date']}"
+            f"{ticker}: {price['close']:.2f} on {price['price_date']}"
             for ticker, price in prices.items()
         )
         return [
@@ -303,19 +248,15 @@ def build_output(
                 "Company Name": "Combined portfolio",
                 "Ticker": "COMBINED",
                 "Portfolio Weight (%)": "100.00",
-                "Purchase Date": "",
                 "Underlying Holdings": holdings_detail,
-                "Purchase Date Detail": ", ".join(
-                    f"{holding['ticker']}: {holding['purchase_date']}" for holding in holdings
-                ),
-                "Purchase Close Detail": price_detail or "Not available",
+                "Price Detail": price_detail or "Not available",
             }
         ]
 
     rows = []
     for holding in holdings:
         price = prices.get(holding["ticker"], {})
-        purchase_close = price.get("purchase_close")
+        close = price.get("close")
         rows.append(
             {
                 "Portfolio Name": portfolio_name,
@@ -324,10 +265,8 @@ def build_output(
                 "GICS Sector": holding["gics_sector"],
                 "Sector Group": holding["sector_group"],
                 "Portfolio Weight (%)": f"{holding['weight']:.2f}",
-                "Purchase Date": holding["purchase_date"],
-                "Purchase Close": f"{purchase_close:.2f}" if purchase_close else "",
-                "Purchase Close Date": price.get("purchase_close_date", ""),
-                "Used Previous Close": price.get("used_previous_close", False),
+                "Price": f"{close:.2f}" if close else "",
+                "Price Date": price.get("price_date", ""),
             }
         )
 
@@ -1052,7 +991,6 @@ HTML = """<!doctype html>
     }
 
     .company-cell { position: relative; padding-left: 52px; }
-    .date-cell { position: relative; }
 
     .ticker-input[readonly] {
       border-color: transparent;
@@ -1091,109 +1029,6 @@ HTML = """<!doctype html>
     .purchase-close { color: #424951; font-variant-numeric: tabular-nums; }
     .price-note { display: block; margin-top: 2px; color: var(--muted); font-size: 11px; }
     .portfolio-meta { color: #555d67; font-size: 13px; font-weight: 500; white-space: nowrap; }
-
-    .calendar-popover {
-      position: absolute;
-      z-index: 20;
-      top: calc(100% - 7px);
-      left: 12px;
-      width: 276px;
-      padding: 12px;
-      border: 1px solid #cbd1d8;
-      border-radius: 7px;
-      background: white;
-      box-shadow: 0 10px 26px rgba(25, 35, 45, 0.14);
-    }
-
-    .calendar-header {
-      display: grid;
-      grid-template-columns: 30px 1fr 30px;
-      align-items: center;
-      margin-bottom: 8px;
-    }
-
-    .calendar-title {
-      border: 0;
-      border-radius: 4px;
-      padding: 5px 7px;
-      background: transparent;
-      color: var(--ink);
-      text-align: center;
-      font-size: 13px;
-      font-weight: 700;
-    }
-    .calendar-title:hover { background: #f0f3f4; }
-    .calendar-nav { border: 0; background: transparent; color: #505760; font-size: 18px; }
-    .calendar-nav:disabled { color: #c4c8cd; cursor: default; }
-
-    .calendar-grid {
-      display: grid;
-      grid-template-columns: repeat(7, 1fr);
-      gap: 3px;
-    }
-
-    .calendar-weekday { padding: 3px 0; color: var(--muted); font-size: 10px; text-align: center; }
-    .calendar-day {
-      aspect-ratio: 1;
-      border: 0;
-      border-radius: 50%;
-      background: transparent;
-      color: var(--ink);
-      font-size: 12px;
-    }
-
-    .calendar-day:hover:not(:disabled) { background: #e8f1ef; }
-    .calendar-day:disabled { color: #c4c7cc; cursor: default; }
-    .calendar-day.selected { background: var(--accent); color: white; }
-    .calendar-empty { aspect-ratio: 1; }
-
-    .month-selector-header {
-      display: grid;
-      grid-template-columns: 30px 1fr 30px;
-      align-items: center;
-      margin-bottom: 12px;
-    }
-
-    .selector-range { text-align: center; font-size: 13px; font-weight: 700; }
-
-    .selector-section-label {
-      margin: 11px 0 6px;
-      color: var(--muted);
-      font-size: 10px;
-      font-weight: 700;
-      text-transform: uppercase;
-    }
-
-    .year-selector-grid {
-      display: grid;
-      grid-template-columns: repeat(5, 1fr);
-      gap: 5px;
-    }
-
-    .year-option,
-    .month-option {
-      min-height: 34px;
-      border: 1px solid transparent;
-      border-radius: 5px;
-      background: #f5f7f8;
-      color: #414850;
-      font-size: 12px;
-    }
-
-    .year-option:hover:not(:disabled),
-    .month-option:hover:not(:disabled) { border-color: #a8c4c0; background: #edf5f3; }
-
-    .year-option.selected,
-    .month-option.selected { border-color: var(--accent); color: var(--accent); font-weight: 700; }
-
-    .year-option:disabled,
-    .month-option:disabled { color: #b9bec4; background: #fafafa; cursor: default; }
-
-    .month-selector-grid {
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 6px;
-    }
 
     tfoot td {
       height: 52px;
@@ -1548,14 +1383,13 @@ HTML = """<!doctype html>
             <th>Company Name</th>
             <th>Ticker</th>
             <th>Portfolio Weight (%)</th>
-            <th>Purchase Date</th>
             <th>Price</th>
             <th></th>
           </tr>
         </thead>
         <tbody>
           <tr id="empty-portfolio-row" class="empty-portfolio-row">
-            <td colspan="6">
+            <td colspan="5">
               <button id="add-portfolio-trigger" class="add-portfolio-trigger" type="button" onclick="openPortfolioDialog()" aria-expanded="false" aria-controls="portfolio-inline-form">Add portfolio</button>
               <div id="portfolio-inline-form" class="portfolio-inline-form" hidden>
                 <form onsubmit="createPortfolio(event)">
@@ -1579,13 +1413,12 @@ HTML = """<!doctype html>
             <td></td>
             <td id="portfolio-row-weight">0.00%</td>
             <td></td>
-            <td></td>
             <td id="portfolio-row-count" class="portfolio-meta">0 holdings</td>
           </tr>
         </tbody>
         <tfoot hidden>
           <tr>
-            <td colspan="6">
+            <td colspan="5">
               <button class="icon-button add-button" type="button" onclick="addRow()" aria-label="Add holding" title="Add holding">+</button>
             </td>
           </tr>
@@ -1688,7 +1521,6 @@ HTML = """<!doctype html>
   </main>
 
   <script>
-    const today = "__TODAY__";
     let isExpanded = true;
     let portfolioCreated = false;
     let portfolioDialogOpen = false;
@@ -1806,7 +1638,6 @@ HTML = """<!doctype html>
         || Boolean(document.querySelector(".editing-row"))
         || currentPortfolioWeight() >= 100 - 0.005;
       closeSuggestions();
-      closeCalendars();
     }
 
     function toggleExpanded() {
@@ -1845,10 +1676,6 @@ HTML = """<!doctype html>
         </td>
         <td><input class="ticker-input" type="text" placeholder="Ticker" readonly aria-label="Ticker"></td>
         <td><div class="weight-field"><input class="weight-input" type="number" min="1" max="6" step="0.01" placeholder="0.00" aria-label="Portfolio weight percent"><span class="weight-suffix" aria-hidden="true">%</span></div></td>
-        <td class="date-cell">
-          <input class="date-input" type="text" placeholder="Select date" readonly aria-label="Purchase date">
-          <div class="calendar-popover" hidden></div>
-        </td>
         <td class="purchase-close"><span class="price-value">-</span><span class="price-note"></span></td>
         <td><div class="row-actions"><button class="edit-button" type="button" onclick="toggleHoldingEdit(this)" hidden>Edit</button><button class="remove-button" type="button" onclick="removeRow(this)" aria-label="Remove holding" title="Remove holding">x</button></div></td>
       `;
@@ -1857,9 +1684,9 @@ HTML = """<!doctype html>
       const actions = document.createElement("tr");
       actions.className = "draft-actions-row";
       actions.innerHTML = `
-        <td colspan="6">
+        <td colspan="5">
           <div class="draft-actions">
-            <span class="draft-validation">Complete company, weight, and purchase date.</span>
+            <span class="draft-validation">Complete company and weight.</span>
             <button class="commit-holding-button" type="button" onclick="commitHolding(this)" disabled>Add to Portfolio</button>
           </div>
         </td>
@@ -1884,7 +1711,6 @@ HTML = """<!doctype html>
         delete row.dataset.sectorGroup;
         row.querySelector(".ticker-input").value = "";
         row.querySelector(".sector-input").value = "";
-        row.querySelector(".date-input").value = "";
         resetPrice(row);
         clearTimeout(searchTimer);
         const query = companyInput.value.trim();
@@ -1916,21 +1742,6 @@ HTML = """<!doctype html>
         input.addEventListener("keydown", (event) => {
           if (event.key === "Enter") input.blur();
         });
-      });
-
-      const dateInput = row.querySelector(".date-input");
-      const calendarPopover = row.querySelector(".calendar-popover");
-      calendarPopover.addEventListener("click", (event) => event.stopPropagation());
-      dateInput.addEventListener("click", (event) => {
-        event.stopPropagation();
-        openCalendar(row);
-      });
-      dateInput.addEventListener("keydown", (event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          openCalendar(row);
-        }
-        if (event.key === "Escape") closeCalendars();
       });
 
       row.querySelector(".sector-input").addEventListener("change", (event) => {
@@ -1976,17 +1787,17 @@ HTML = """<!doctype html>
       list.hidden = results.length === 0;
     }
 
-    function selectCompany(row, result) {
+    async function selectCompany(row, result) {
       row.querySelector(".company-input").value = result.company_name;
       row.querySelector(".ticker-input").value = result.ticker;
       row.querySelector(".sector-input").value = "";
-      row.querySelector(".date-input").value = "";
       row.dataset.selectedCompany = result.company_name;
       hideSuggestions(row);
       resetPrice(row);
       updateDraftValidation(row);
-      classifyHoldingRow(row, result.ticker);
       row.querySelector(".weight-input").focus();
+      await classifyHoldingRow(row, result.ticker);
+      await fetchLatestClose(row);
     }
 
     async function classifyHoldingRow(row, ticker) {
@@ -2017,19 +1828,17 @@ HTML = """<!doctype html>
       );
       const weight = Number(row.querySelector(".weight-input").value || 0);
       const weightReady = weight >= 1 && weight <= 6;
-      const dateReady = Boolean(row.querySelector(".date-input").value);
       const sectorReady = Boolean(
         row.dataset.sectorGroup && row.dataset.sectorGroup !== "Classifying"
       );
       const fitsPortfolio = currentPortfolioWeight() + weight <= 100 + 0.005;
-      const ready = companyReady && weightReady && dateReady && sectorReady && fitsPortfolio;
+      const ready = companyReady && weightReady && sectorReady && fitsPortfolio;
       const button = actions.querySelector(".commit-holding-button");
       const message = actions.querySelector(".draft-validation");
       button.disabled = !ready;
 
       if (!companyReady) message.textContent = "Select a company from the suggestions.";
       else if (!weightReady) message.textContent = "Enter a weight between 1.00% and 6.00%.";
-      else if (!dateReady) message.textContent = "Select a purchase date.";
       else if (!sectorReady) message.textContent = "Identifying sector...";
       else if (!fitsPortfolio) message.textContent = "Lower another weight before adding this security.";
       else message.textContent = "Ready to add.";
@@ -2077,12 +1886,11 @@ HTML = """<!doctype html>
         && row.querySelector(".ticker-input").value.trim()
         && Number(weight.value) >= 1
         && Number(weight.value) <= 6
-        && row.querySelector(".date-input").value
         && row.dataset.sectorGroup
         && row.dataset.sectorGroup !== "Classifying";
       const status = document.getElementById("status");
       if (!valid) {
-        status.textContent = "Complete company, sector, weight, and purchase date before saving.";
+        status.textContent = "Complete company, sector, and weight before saving.";
         status.className = "status warning";
         return;
       }
@@ -2617,7 +2425,6 @@ HTML = """<!doctype html>
         && holding.sector_group
         && Number(holding.weight) >= 1
         && Number(holding.weight) <= 6
-        && holding.purchase_date
       );
       const candidate = readCandidate();
       const candidateReady = candidate.ticker && candidate.sector_group;
@@ -2693,12 +2500,6 @@ HTML = """<!doctype html>
       document.querySelectorAll(".suggestions").forEach((list) => { list.hidden = true; });
     }
 
-    function closeCalendars(exceptRow = null) {
-      document.querySelectorAll(".holding-row, .draft-row").forEach((row) => {
-        if (row !== exceptRow) row.querySelector(".calendar-popover").hidden = true;
-      });
-    }
-
     function resetPrice(row) {
       row.querySelector(".price-value").textContent = "-";
       row.querySelector(".price-note").textContent = "";
@@ -2713,222 +2514,19 @@ HTML = """<!doctype html>
       else updatePortfolioSummary();
     }
 
-    async function openCalendar(row) {
-      if (row.classList.contains("holding-row") && !row.classList.contains("editing-row")) return;
+    async function fetchLatestClose(row) {
       const ticker = row.querySelector(".ticker-input").value.trim();
-      if (!ticker) return;
-
-      closeSuggestions();
-      closeCalendars(row);
-      const selected = row.querySelector(".date-input").value;
-      const initial = selected ? new Date(`${selected}T12:00:00`) : new Date(`${today}T12:00:00`);
-      row.dataset.calendarYear = String(initial.getFullYear());
-      row.dataset.calendarMonth = String(initial.getMonth() + 1);
-      await renderCalendar(row);
-    }
-
-    async function renderCalendar(row) {
-      const ticker = row.querySelector(".ticker-input").value.trim();
-      const year = Number(row.dataset.calendarYear);
-      const month = Number(row.dataset.calendarMonth);
-      const popover = row.querySelector(".calendar-popover");
-      popover.hidden = false;
-      popover.textContent = "Loading...";
-
-      try {
-        const response = await fetch(`/trading-days?ticker=${encodeURIComponent(ticker)}&year=${year}&month=${month}`);
-        const result = await response.json();
-        if (!response.ok) throw new Error(result.error || "Calendar unavailable");
-        if (Number(row.dataset.calendarYear) !== year || Number(row.dataset.calendarMonth) !== month) return;
-        row.dataset.listingCutoff = result.cutoff;
-
-        const validDays = new Set(result.days);
-        const selected = row.querySelector(".date-input").value;
-        const monthName = new Intl.DateTimeFormat("en-CA", { month: "long", year: "numeric" })
-          .format(new Date(year, month - 1, 1));
-        const current = new Date(`${today}T12:00:00`);
-        const atCurrentMonth = year === current.getFullYear() && month === current.getMonth() + 1;
-        const cutoff = new Date(`${result.cutoff}T12:00:00`);
-        const atCutoffMonth = year === cutoff.getFullYear() && month === cutoff.getMonth() + 1;
-
-        popover.replaceChildren();
-        const header = document.createElement("div");
-        header.className = "calendar-header";
-        const previous = calendarNav("‹", "Previous month", () => changeCalendarMonth(row, -1));
-        previous.disabled = atCutoffMonth;
-        const title = document.createElement("button");
-        title.type = "button";
-        title.className = "calendar-title";
-        title.textContent = monthName;
-        title.setAttribute("aria-label", `Choose month and year, currently ${monthName}`);
-        title.addEventListener("click", (event) => {
-          event.stopPropagation();
-          row.dataset.calendarDecade = String(Math.floor(year / 10) * 10);
-          renderMonthYearSelector(row);
-        });
-        const next = calendarNav("›", "Next month", () => changeCalendarMonth(row, 1));
-        next.disabled = atCurrentMonth;
-        header.append(previous, title, next);
-
-        const grid = document.createElement("div");
-        grid.className = "calendar-grid";
-        ["S", "M", "T", "W", "T", "F", "S"].forEach((label) => {
-          const weekday = document.createElement("div");
-          weekday.className = "calendar-weekday";
-          weekday.textContent = label;
-          grid.appendChild(weekday);
-        });
-
-        const firstWeekday = new Date(year, month - 1, 1).getDay();
-        const daysInMonth = new Date(year, month, 0).getDate();
-        for (let blank = 0; blank < firstWeekday; blank += 1) {
-          const spacer = document.createElement("div");
-          spacer.className = "calendar-empty";
-          grid.appendChild(spacer);
-        }
-
-        for (let day = 1; day <= daysInMonth; day += 1) {
-          const isoDate = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-          const button = document.createElement("button");
-          button.type = "button";
-          button.className = "calendar-day";
-          button.textContent = String(day);
-          button.disabled = !validDays.has(isoDate);
-          if (isoDate === selected) button.classList.add("selected");
-          button.addEventListener("click", () => selectPurchaseDate(row, isoDate));
-          grid.appendChild(button);
-        }
-
-        popover.append(header, grid);
-      } catch (error) {
-        popover.textContent = "Trading calendar unavailable.";
-      }
-    }
-
-    function renderMonthYearSelector(row) {
-      const popover = row.querySelector(".calendar-popover");
-      const selectedYear = Number(row.dataset.calendarYear);
-      const selectedMonth = Number(row.dataset.calendarMonth);
-      const current = new Date(`${today}T12:00:00`);
-      const currentYear = current.getFullYear();
-      const currentMonth = current.getMonth() + 1;
-      const cutoff = new Date(`${row.dataset.listingCutoff}T12:00:00`);
-      const cutoffYear = cutoff.getFullYear();
-      const cutoffMonth = cutoff.getMonth() + 1;
-      const currentDecade = Math.floor(currentYear / 10) * 10;
-      const cutoffDecade = Math.floor(cutoffYear / 10) * 10;
-      const decadeStart = Number(row.dataset.calendarDecade || Math.floor(selectedYear / 10) * 10);
-      row.dataset.calendarDecade = String(decadeStart);
-
-      popover.replaceChildren();
-
-      const header = document.createElement("div");
-      header.className = "month-selector-header";
-      const previousDecade = calendarNav("‹", "Previous decade", () => changeCalendarDecade(row, -10));
-      previousDecade.disabled = decadeStart <= cutoffDecade;
-      const range = document.createElement("div");
-      range.className = "selector-range";
-      range.textContent = `${decadeStart}–${decadeStart + 9}`;
-      const nextDecade = calendarNav("›", "Next decade", () => changeCalendarDecade(row, 10));
-      nextDecade.disabled = decadeStart >= currentDecade;
-      header.append(previousDecade, range, nextDecade);
-
-      const yearsLabel = document.createElement("div");
-      yearsLabel.className = "selector-section-label";
-      yearsLabel.textContent = "Year";
-      const years = document.createElement("div");
-      years.className = "year-selector-grid";
-      for (let year = decadeStart; year <= decadeStart + 9; year += 1) {
-        const button = document.createElement("button");
-        button.type = "button";
-        button.className = "year-option";
-        button.textContent = String(year);
-        button.disabled = year > currentYear || year < cutoffYear;
-        if (year === selectedYear) button.classList.add("selected");
-        button.addEventListener("click", (event) => {
-          event.stopPropagation();
-          row.dataset.calendarYear = String(year);
-          renderMonthYearSelector(row);
-        });
-        years.appendChild(button);
-      }
-
-      const monthsLabel = document.createElement("div");
-      monthsLabel.className = "selector-section-label";
-      monthsLabel.textContent = "Month";
-      const grid = document.createElement("div");
-      grid.className = "month-selector-grid";
-      const monthLabels = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-      monthLabels.forEach((label, index) => {
-        const month = index + 1;
-        const button = document.createElement("button");
-        button.type = "button";
-        button.className = "month-option";
-        button.textContent = label;
-        const beforeListing = selectedYear < cutoffYear || (selectedYear === cutoffYear && month < cutoffMonth);
-        const afterCurrent = selectedYear > currentYear || (selectedYear === currentYear && month > currentMonth);
-        button.disabled = beforeListing || afterCurrent;
-        if (selectedYear === Number(row.dataset.calendarYear) && month === selectedMonth) {
-          button.classList.add("selected");
-        }
-        button.addEventListener("click", (event) => {
-          event.stopPropagation();
-          row.dataset.calendarMonth = String(month);
-          renderCalendar(row);
-        });
-        grid.appendChild(button);
-      });
-
-      popover.append(header, yearsLabel, years, monthsLabel, grid);
-    }
-
-    function calendarNav(label, ariaLabel, action) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "calendar-nav";
-      button.textContent = label;
-      button.setAttribute("aria-label", ariaLabel);
-      button.addEventListener("click", (event) => {
-        event.stopPropagation();
-        action();
-      });
-      return button;
-    }
-
-    function changeCalendarDecade(row, amount) {
-      row.dataset.calendarDecade = String(Number(row.dataset.calendarDecade) + amount);
-      renderMonthYearSelector(row);
-    }
-
-    function changeCalendarMonth(row, amount) {
-      const current = new Date(Number(row.dataset.calendarYear), Number(row.dataset.calendarMonth) - 1 + amount, 1);
-      row.dataset.calendarYear = String(current.getFullYear());
-      row.dataset.calendarMonth = String(current.getMonth() + 1);
-      renderCalendar(row);
-    }
-
-    function selectPurchaseDate(row, isoDate) {
-      row.querySelector(".date-input").value = isoDate;
-      row.querySelector(".calendar-popover").hidden = true;
-      updateDraftValidation(row);
-      if (row.classList.contains("holding-row")) scheduleAnalysisRefresh();
-      fetchPurchaseClose(row);
-    }
-
-    async function fetchPurchaseClose(row) {
-      const ticker = row.querySelector(".ticker-input").value.trim();
-      const selectedDate = row.querySelector(".date-input").value;
       const value = row.querySelector(".price-value");
       const note = row.querySelector(".price-note");
       value.textContent = "...";
       note.textContent = "";
 
       try {
-        const response = await fetch(`/price?ticker=${encodeURIComponent(ticker)}&date=${encodeURIComponent(selectedDate)}`);
+        const response = await fetch(`/price?ticker=${encodeURIComponent(ticker)}`);
         const result = await response.json();
         if (!response.ok) throw new Error(result.error || "Price unavailable");
         value.textContent = `$${Number(result.close).toFixed(2)}`;
-        note.textContent = result.used_previous_close ? `Previous close: ${result.price_date}` : "";
+        note.textContent = `Close: ${result.price_date}`;
       } catch (error) {
         value.textContent = "-";
         note.textContent = "Unavailable";
@@ -2953,8 +2551,7 @@ HTML = """<!doctype html>
         ticker: tr.querySelector(".ticker-input").value,
         gics_sector: tr.dataset.gicsSector || "",
         sector_group: tr.dataset.sectorGroup || "",
-        weight: tr.querySelector(".weight-input").value,
-        purchase_date: tr.querySelector(".date-input").value
+        weight: tr.querySelector(".weight-input").value
       }));
     }
 
@@ -2988,7 +2585,6 @@ HTML = """<!doctype html>
     document.addEventListener("click", (event) => {
       if (!event.target.closest(".company-cell")) closeSuggestions();
       if (!event.target.closest(".candidate-company")) hideCandidateSuggestions();
-      if (!event.target.closest(".date-cell")) closeCalendars();
     });
     document.getElementById("portfolio-name").addEventListener("input", scheduleAnalysisRefresh);
     bindCandidateInput();
@@ -2996,7 +2592,7 @@ HTML = """<!doctype html>
   </script>
 </body>
 </html>
-""".replace("__TODAY__", date.today().isoformat())
+"""
 
 
 class PortfolioInputHandler(BaseHTTPRequestHandler):
@@ -3033,40 +2629,13 @@ class PortfolioInputHandler(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps(result).encode("utf-8"))
             return
 
-        if parsed_path.path == "/trading-days":
-            params = parse_qs(parsed_path.query)
-            try:
-                ticker = params.get("ticker", [""])[0].strip().upper()
-                year = int(params.get("year", [""])[0])
-                month = int(params.get("month", [""])[0])
-                if not ticker or month < 1 or month > 12:
-                    raise ValueError("Ticker, year, and month are required.")
-                result = {
-                    "ticker": ticker,
-                    "calendar": calendar_name_for_ticker(ticker),
-                    "cutoff": earliest_available_price_date(ticker).isoformat(),
-                    "days": trading_days_for_month(ticker, year, month),
-                }
-                status = 200
-            except (TypeError, ValueError, RuntimeError) as error:
-                result = {"error": str(error)}
-                status = 400
-
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Cache-Control", "private, max-age=3600")
-            self.end_headers()
-            self.wfile.write(json.dumps(result).encode("utf-8"))
-            return
-
         if parsed_path.path == "/price":
             params = parse_qs(parsed_path.query)
             try:
                 ticker = params.get("ticker", [""])[0].strip().upper()
-                selected_date = params.get("date", [""])[0].strip()
-                if not ticker or not selected_date or yf is None:
-                    raise ValueError("Ticker and purchase date are required.")
-                result = purchase_date_close(ticker, selected_date)
+                if not ticker:
+                    raise ValueError("Ticker is required.")
+                result = latest_completed_close(ticker)
                 status = 200
             except (TypeError, ValueError, RuntimeError) as error:
                 result = {"error": str(error)}
@@ -3077,12 +2646,7 @@ class PortfolioInputHandler(BaseHTTPRequestHandler):
 
             self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
-            cache_control = (
-                "no-store"
-                if selected_date == date.today().isoformat()
-                else "private, max-age=300"
-            )
-            self.send_header("Cache-Control", cache_control)
+            self.send_header("Cache-Control", "private, max-age=300")
             self.end_headers()
             self.wfile.write(json.dumps(result).encode("utf-8"))
             return
@@ -3235,7 +2799,6 @@ def run_streamlit_native_app() -> None:
                 "Company Name": holding["company_name"],
                 "Ticker": holding["ticker"],
                 "Portfolio Weight (%)": f'{holding["weight"]:.2f}%',
-                "Purchase Date": holding["purchase_date"],
                 "Price": f'${holding["price"]:.2f}',
             }
             for holding in group_holdings
@@ -3245,27 +2808,17 @@ def run_streamlit_native_app() -> None:
     if holdings:
         with st.expander("Edit current securities"):
             for index, holding in enumerate(list(holdings)):
-                cols = st.columns([3, 1.2, 1.6, .7])
+                cols = st.columns([3, 1.2, .7])
                 cols[0].write(f'**{holding["company_name"]}**  \n{holding["ticker"]}')
                 new_weight = cols[1].number_input(
                     "Weight", min_value=1.0, max_value=6.0, value=float(holding["weight"]),
                     step=0.25, format="%.2f", key=f"edit_weight_{holding['ticker']}_{index}",
                 )
-                new_date = cols[2].date_input(
-                    "Purchase date", value=date.fromisoformat(holding["purchase_date"]),
-                    max_value=date.today(), key=f"edit_date_{holding['ticker']}_{index}",
-                )
-                if cols[3].button("Remove", key=f"remove_{holding['ticker']}_{index}"):
+                if cols[2].button("Remove", key=f"remove_{holding['ticker']}_{index}"):
                     st.session_state.holdings.pop(index)
                     st.rerun()
-                if new_weight != holding["weight"] or new_date.isoformat() != holding["purchase_date"]:
-                    try:
-                        price = purchase_date_close(holding["ticker"], new_date.isoformat())
-                        holding["weight"] = float(new_weight)
-                        holding["purchase_date"] = new_date.isoformat()
-                        holding["price"] = price["close"]
-                    except Exception as error:
-                        st.warning(f'{holding["ticker"]}: {error}')
+                if new_weight != holding["weight"]:
+                    holding["weight"] = float(new_weight)
 
     total_weight = sum(float(holding["weight"]) for holding in holdings)
     total_weight += st.session_state.cad_cash + st.session_state.usd_cash
@@ -3280,13 +2833,9 @@ def run_streamlit_native_app() -> None:
                 "Matching company", [""] + list(options),
                 format_func=lambda value: value or "Select a company",
             )
-            add_left, add_right = st.columns(2)
-            weight = add_left.number_input(
+            weight = st.number_input(
                 "Weight (%)", min_value=1.0, max_value=6.0, value=1.0,
                 step=0.25, format="%.2f", key="new_weight",
-            )
-            purchase_date = add_right.date_input(
-                "Purchase date", value=date.today(), max_value=date.today(), key="new_purchase_date",
             )
             if st.button("Add to Portfolio", disabled=not selected_label):
                 selected = options[selected_label]
@@ -3298,14 +2847,13 @@ def run_streamlit_native_app() -> None:
                 else:
                     try:
                         classification = classify_security(ticker)
-                        price = purchase_date_close(ticker, purchase_date.isoformat())
+                        price = latest_completed_close(ticker)
                         holdings.append({
                             "company_name": selected["company_name"],
                             "ticker": ticker,
                             "gics_sector": classification["gics_sector"],
                             "sector_group": classification["sector_group"],
                             "weight": float(weight),
-                            "purchase_date": purchase_date.isoformat(),
                             "price": price["close"],
                         })
                         st.rerun()
@@ -3537,7 +3085,7 @@ STREAMLIT_COMPONENT_BRIDGE = r"""
 
 
 def streamlit_component_html() -> str:
-    script_marker = "  <script>\n    const today"
+    script_marker = "  <script>\n    let isExpanded"
     if script_marker not in HTML:
         raise RuntimeError("FitCheck component script marker was not found.")
     return HTML.replace(script_marker, STREAMLIT_COMPONENT_BRIDGE + script_marker, 1)
@@ -3558,26 +3106,12 @@ def handle_streamlit_request(request: dict) -> dict:
             if not ticker:
                 raise ValueError("Ticker is required.")
             result = classify_security(ticker)
-        elif method == "GET" and parsed_path.path == "/trading-days":
-            params = parse_qs(parsed_path.query)
-            ticker = params.get("ticker", [""])[0].strip().upper()
-            year = int(params.get("year", [""])[0])
-            month = int(params.get("month", [""])[0])
-            if not ticker or month < 1 or month > 12:
-                raise ValueError("Ticker, year, and month are required.")
-            result = {
-                "ticker": ticker,
-                "calendar": calendar_name_for_ticker(ticker),
-                "cutoff": earliest_available_price_date(ticker).isoformat(),
-                "days": trading_days_for_month(ticker, year, month),
-            }
         elif method == "GET" and parsed_path.path == "/price":
             params = parse_qs(parsed_path.query)
             ticker = params.get("ticker", [""])[0].strip().upper()
-            selected_date = params.get("date", [""])[0].strip()
-            if not ticker or not selected_date:
-                raise ValueError("Ticker and purchase date are required.")
-            result = purchase_date_close(ticker, selected_date)
+            if not ticker:
+                raise ValueError("Ticker is required.")
+            result = latest_completed_close(ticker)
         elif method == "POST" and parsed_path.path in {"/prepare", "/analyze"}:
             payload = json.loads(str(request.get("body", "{}")))
             result = (
